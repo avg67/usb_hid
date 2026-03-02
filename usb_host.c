@@ -33,6 +33,7 @@ static QueueHandle_t hid_led_request_queue = NULL;
 static TaskHandle_t usb_hid_task_handle = NULL;  // Store USB thread handle
 
 int set_keyboard_leds_thread_safe(int hid_index, uint8_t led_state);
+int usbh_hid_set_protocol(struct usbh_hid *hid_class, uint8_t protocol);
 
 #define DEV_KBD   0
 #define DEV_MOUSE 1
@@ -378,18 +379,18 @@ static int set_keyboard_leds_internal(struct hid_led_request *led_req)
     #endif
 
     if(led_req->led_state & 1) {
-      printf("Enable NUMLOCK Led\r\n");
+      //printf("Enable NUMLOCK Led\r\n");
       bflb_gpio_reset(gpio, GPIO_PIN_27);
     }else {
-      printf("Disable NUMLOCK Led\r\n");  
+      //printf("Disable NUMLOCK Led\r\n");  
       bflb_gpio_set(gpio, GPIO_PIN_27);  
     }
     if(led_req->led_state & 2) {
         bflb_gpio_reset(gpio, GPIO_PIN_28);
-        printf("Enable CAPSLOCK Led\r\n");
+        //printf("Enable CAPSLOCK Led\r\n");
     }else {
         bflb_gpio_set(gpio, GPIO_PIN_28);
-        printf("Disable CAPSLOCK Led\r\n");
+        //printf("Disable CAPSLOCK Led\r\n");
     }
     usb_set_all_keyboard_leds(led_req->led_state);
 
@@ -543,18 +544,18 @@ void usbh_hid_run(struct usbh_hid *hid_class) {
   printf("HID run\r\n");
   //usbh_hid_update();
   // LED 1 on
-#ifdef M0S_DOCK
-  bflb_gpio_reset(gpio, GPIO_PIN_27);
-#endif
+// #ifdef M0S_DOCK
+//   bflb_gpio_reset(gpio, GPIO_PIN_27);
+// #endif
 }
 
 void usbh_hid_stop(struct usbh_hid *hid_class) {
   printf("HID stop\r\n");
   //usbh_hid_update();
   // LED 1 off
-#ifdef M0S_DOCK
-  bflb_gpio_set(gpio, GPIO_PIN_27);
-#endif
+// #ifdef M0S_DOCK
+//   bflb_gpio_set(gpio, GPIO_PIN_27);
+// #endif
 }
 
 
@@ -580,12 +581,6 @@ static void ps2_kbd_thread(void *argument)
 
     uart1 = bflb_device_get_by_name("uart1");   // AV added
     bflb_uart_init(uart1, &cfg);
-
-  /* bflb_uart_putchar(uart1,' ');
-   bflb_uart_putchar(uart1,'A');
-   bflb_uart_putchar(uart1,'n');
-   bflb_uart_putchar(uart1,'d');
-   bflb_uart_putchar(uart1,'i');*/
 
 /*   vTaskDelay(pdMS_TO_TICKS(5000));
    // From your menu or any thread
@@ -614,7 +609,9 @@ printf("LED tests complete\r\n");*/
     const int ret = usb_osal_mq_recv(my_queue, &received_val, USB_OSAL_WAITING_FOREVER);
     if (ret == 0) {
         // Data successfully received
+#ifdef DEBUG_KEYBOARD        
         printf("Received value: %d\r\n", (BYTE)received_val);
+#endif        
         DecodeKey2NKC((BYTE)received_val);
     }
   }

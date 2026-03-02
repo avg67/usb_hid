@@ -238,7 +238,7 @@ void TransferData2FIFO(const BYTE code)
 {
     //FIFO_in(&KeyboardFIFO, code);
     if (code>=' ') {
-      printf("Char:'%c'",code);
+      printf("Char:'%c' ",code);
     }else{
       printf("<0x%02X>",code);
     }
