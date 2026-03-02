@@ -376,6 +376,21 @@ static int set_keyboard_leds_internal(struct hid_led_request *led_req)
         return ret;
     }
     #endif
+
+    if(led_req->led_state & 1) {
+      printf("Enable NUMLOCK Led\r\n");
+      bflb_gpio_reset(gpio, GPIO_PIN_27);
+    }else {
+      printf("Disable NUMLOCK Led\r\n");  
+      bflb_gpio_set(gpio, GPIO_PIN_27);  
+    }
+    if(led_req->led_state & 2) {
+        bflb_gpio_reset(gpio, GPIO_PIN_28);
+        printf("Enable CAPSLOCK Led\r\n");
+    }else {
+        bflb_gpio_set(gpio, GPIO_PIN_28);
+        printf("Disable CAPSLOCK Led\r\n");
+    }
     usb_set_all_keyboard_leds(led_req->led_state);
 
     printf("LED request completed successfully\r\n");

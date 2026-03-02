@@ -157,10 +157,10 @@ static BOOL bKeyUpSeen;                          // Key Up (Break) code is previ
 static BOOL bExtenSeen;                          // Extention code is previous data
 static BYTE KeyStates;                           // States of Shift, Ctrl, Alt keys is down
 
-static BYTE KeyboardBuffer [KEYBOARDBUFFER_SIZE]; // Keyboard buffer (32 bytes)
-static tFIFO KeyboardFIFO;                        // Management struct for Keyboard buffer
+//static BYTE KeyboardBuffer [KEYBOARDBUFFER_SIZE]; // Keyboard buffer (32 bytes)
+//static tFIFO KeyboardFIFO;                        // Management struct for Keyboard buffer
 
-static BOOL first;
+//static BOOL first;
 
 //========================================================================
 //========================================================================
@@ -249,7 +249,7 @@ void TransferData2FIFO(const BYTE code)
 //========================================================================
 // Transfer a byte to NKC
 //========================================================================
-
+/*
 void TransferData2NKC(void)
 {
    BYTE   data;
@@ -267,7 +267,7 @@ void TransferData2NKC(void)
 #endif
 	  first = FALSE;
    }
-}
+}*/
 
 extern struct bflb_device_s *gpio;
 
@@ -484,7 +484,7 @@ void DecodeKey2NKC(BYTE ScanCode)
    BYTE      NKCcode = 0;
    BYTE      a, b;
    LPCPBYTE  cp;
-   int		 i;
+   //int		 i;
 
 
    switch ( ScanCode )
