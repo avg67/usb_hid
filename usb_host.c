@@ -177,6 +177,7 @@ void mouse_parse(signed char *buffer, int nbytes) {
   ps2_tx_byte(DEV_MOUSE, buffer[2]);
   ps2_tx_byte(DEV_MOUSE, buffer[1]);
   ps2_tx_byte(DEV_MOUSE, 0x00);      // z-axis is unused
+  printf("Mouse: buttons=%d x=%d y=%d\r\n", b0&3, buffer[2], buffer[1]);
 }
 
 void usbh_hid_callback(void *arg, int nbytes) {
@@ -248,8 +249,8 @@ static void usbh_hid_update(void) {
       printf("report descriptor: %p\r\n", hid_info[i].class->report_desc);
       
       if(!parse_report_descriptor(hid_info[i].class->report_desc, 128, &hid_info[i].report)) {
-	hid_info[i].state = STATE_FAILED;   // parsing failed, don't use
-	return;
+	      hid_info[i].state = STATE_FAILED;   // parsing failed, don't use
+	      return;
       }
       
       hid_info[i].state = STATE_DETECTED;
@@ -479,7 +480,7 @@ static void usbh_hid_thread(void *argument)
 
 
 
-
+#if 0
 
     	// set report protocol 1 if subclass != BOOT_INTF
     	// CherryUSB doesn't report the InterfaceSubClass (HID_BOOT_INTF_SUBCLASS)
@@ -494,7 +495,7 @@ static void usbh_hid_thread(void *argument)
     	    continue;
     	  }
     	}
-
+#endif
 
  
 
