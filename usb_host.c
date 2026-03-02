@@ -281,7 +281,7 @@ int usbh_hid_set_report_patched(struct usbh_hid *hid_class, uint8_t report_type,
 
 void usb_set_all_keyboard_leds(uint8_t leds_mask) 
 { 
-    uint8_t g_kbd_leds = leds_mask | 0xF8;
+    uint8_t g_kbd_leds = leds_mask & 0x1f;  // Only bits 0-4 are valid LED bits
 
     for (int i = 0; i < CONFIG_USBHOST_MAX_HID_CLASS; i++) { 
         if (hid_info[i].state != STATE_RUNNING) { 
@@ -316,7 +316,7 @@ static int set_keyboard_leds_internal(struct hid_led_request *led_req)
         return -1;
     }
     
-    #if 0
+#if 0
     struct hid_info_S *hid = &hid_info[led_req->hid_index];
 
     if (!hid->class || hid->state != STATE_RUNNING) {
@@ -448,8 +448,9 @@ static void usbh_hid_thread(void *argument)
   int ret;
   //usbh_hid_keyboard_init(hid->class);
 
+  
   while (1) {
-
+    usb_hid_task_handle = xTaskGetCurrentTaskHandle();
     usbh_hid_update();
     
     usb_osal_msleep(10);
@@ -463,49 +464,49 @@ static void usbh_hid_thread(void *argument)
 
 
 
-#if 0
-	// set report protocol 1 if subclass != BOOT_INTF
-	// CherryUSB doesn't report the InterfaceSubClass (HID_BOOT_INTF_SUBCLASS)
-	// we thus set boot protocol on keyboards
-	if( hid_info[i].report.type == REPORT_TYPE_KEYBOARD ) {	
-	  // 0x0 = boot protocol, 0x1 = report protocol 
-	  printf("setting boot protocol\r\n");
-	  ret = usbh_hid_set_protocol(hid_info[i].class, HID_PROTOCOL_BOOT);
-	  if (ret < 0) {
-	    printf("failed\r\n");
-	    hid_info[i].state = STATE_FAILED;  // failed
-	    continue;
-	  }
-	}
-#endif
+
+    	// set report protocol 1 if subclass != BOOT_INTF
+    	// CherryUSB doesn't report the InterfaceSubClass (HID_BOOT_INTF_SUBCLASS)
+    	// we thus set boot protocol on keyboards
+    	if( hid_info[i].report.type == REPORT_TYPE_KEYBOARD ) {	
+    	  // 0x0 = boot protocol, 0x1 = report protocol 
+    	  printf("setting boot protocol\r\n");
+    	  ret = usbh_hid_set_protocol(hid_info[i].class, HID_PROTOCOL_BOOT);
+    	  if (ret < 0) {
+    	    printf("failed\r\n");
+    	    hid_info[i].state = STATE_FAILED;  // failed
+    	    continue;
+    	  }
+    	}
+
 
  
 
 	
-	// request first urb
-	printf("%d: Submit urb size %d\r\n", i, hid_info[i].report.report_size + (hid_info[i].report.report_id_present ? 1:0));
-  printf("%d: intin endpoint: %p\r\n", i, hid_info[i].class->intin);
-  printf("%d: hport: %p\r\n", i, hid_info[i].class->hport);
-  printf("%d: report type: %d\r\n", i, hid_info[i].report.type);
-	usbh_int_urb_fill(&hid_info[i].intin_urb,
-            hid_info[i].class->hport,
-            hid_info[i].class->intin, hid_info[i].buffer,
-            hid_info[i].report.report_size + (hid_info[i].report.report_id_present ? 1:0),
-            0, usbh_hid_callback, &hid_info[i]);
-	ret = usbh_submit_urb(&hid_info[i].intin_urb);
-	if (ret < 0) {
-	  // submit failed
-	  printf("initial submit failed\r\n");
-	  hid_info[i].state = STATE_FAILED;
-	  continue;
-	}
-      } else if(hid_info[i].state == STATE_RUNNING) {
-	// todo: honour binterval which is in milliseconds for low speed
-	// todo: wait for callback
-	ret = usbh_submit_urb(&hid_info[i].intin_urb);
-	// if (ret < 0) printf("submit failed\r\n");
+    	// request first urb
+    	printf("%d: Submit urb size %d\r\n", i, hid_info[i].report.report_size + (hid_info[i].report.report_id_present ? 1:0));
+        printf("%d: intin endpoint: %p\r\n", i, hid_info[i].class->intin);
+        printf("%d: hport: %p\r\n", i, hid_info[i].class->hport);
+        printf("%d: report type: %d\r\n", i, hid_info[i].report.type);
+    	usbh_int_urb_fill(&hid_info[i].intin_urb,
+                hid_info[i].class->hport,
+                hid_info[i].class->intin, hid_info[i].buffer,
+                hid_info[i].report.report_size + (hid_info[i].report.report_id_present ? 1:0),
+                0, usbh_hid_callback, &hid_info[i]);
+    	ret = usbh_submit_urb(&hid_info[i].intin_urb);
+    	if (ret < 0) {
+    	  // submit failed
+    	  printf("initial submit failed\r\n");
+    	  hid_info[i].state = STATE_FAILED;
+    	  continue;
+    	}
+          } else if(hid_info[i].state == STATE_RUNNING) {
+      	    // todo: honour binterval which is in milliseconds for low speed
+        	// todo: wait for callback
+        	ret = usbh_submit_urb(&hid_info[i].intin_urb);
+        	// if (ret < 0) printf("submit failed\r\n");
+          }
       }
-    }
     {
       struct hid_led_request led_req={0};
       // Process pending LED requests (non-blocking check, 10ms timeout)

@@ -269,6 +269,8 @@ void TransferData2NKC(void)
    }
 }
 
+extern struct bflb_device_s *gpio;
+
 //========================================================================
 //========================================================================
 // Set Keyboard LEDs
@@ -286,7 +288,10 @@ void SetKeyboardLEDs(void)
    WaitForACKorData();                           // Wait until keyboard acknoledge received
    Send2PS2Device(LEDs);                         // Send led bits
 #endif
+
    set_keyboard_leds_thread_safe(0,LEDs);
+      
+
 }
 
 //========================================================================
