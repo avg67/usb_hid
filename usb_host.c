@@ -464,10 +464,10 @@ static void usbh_hid_thread(void *argument)
 {
   int ret;
   //usbh_hid_keyboard_init(hid->class);
-
+  usb_hid_task_handle = xTaskGetCurrentTaskHandle();  
   
   while (1) {
-    usb_hid_task_handle = xTaskGetCurrentTaskHandle();
+
     usbh_hid_update();
     
     usb_osal_msleep(10);
@@ -480,7 +480,7 @@ static void usbh_hid_thread(void *argument)
 
 
 
-#if 0
+//#if 0
 
     	// set report protocol 1 if subclass != BOOT_INTF
     	// CherryUSB doesn't report the InterfaceSubClass (HID_BOOT_INTF_SUBCLASS)
@@ -495,7 +495,7 @@ static void usbh_hid_thread(void *argument)
     	    continue;
     	  }
     	}
-#endif
+//#endif
 
  
 
@@ -636,8 +636,8 @@ void usbh_class_test(void) {
   }
   my_queue = usb_osal_mq_create(10);
 
-  usb_osal_thread_create("usbh_hid", 2048, CONFIG_USBHOST_PSC_PRIO + 1, usbh_hid_thread, NULL);
-  usb_osal_thread_create("ps2_kbd", 2048, CONFIG_USBHOST_PSC_PRIO + 1, ps2_kbd_thread, NULL);
+  usb_osal_thread_create("usbh_hid", 2048, CONFIG_USBHOST_PSC_PRIO - 1, usbh_hid_thread, NULL);
+  usb_osal_thread_create("ps2_kbd", 2048, CONFIG_USBHOST_PSC_PRIO - 2 , ps2_kbd_thread, NULL);
 }
 #if 0
 /**
