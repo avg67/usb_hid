@@ -6,7 +6,7 @@
 **  File:      ps2interface.h                                           **
 **  Date:      12.02.2007                                               **
 **  Version:   0.95                                                     **
-**  Plattform: WinAVR-20060421 & AVR Studio 4.12.498 & STK500           **
+**  Plattform:                                                          **
 **                                                                      **
 **  Created by Gerald Ebert                                             **
 **                                                                      **

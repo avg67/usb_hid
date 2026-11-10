@@ -6,7 +6,7 @@
 **  File:      fifo.h                                                   **
 **  Date:      12.02.2006                                               **
 **  Version:   1.00                                                     **
-**  Plattform: WinAVR-20060421 & AVR Studio 4.12.498 & STK500           **
+**  Plattform:                                                          **
 **                                                                      **
 **  Created by Gerald Ebert                                             **
 **                                                                      **

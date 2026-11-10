@@ -6,7 +6,7 @@
 **  File:      ps2mouse.c                                               **
 **  Date:      10.01.2018                                               **
 **  Version:   0.96                                                     **
-**  Plattform: WinAVR-20060421 & AVR Studio 4.12.498 & STK500           **
+**  Plattform:                                                          **
 **                                                                      **
 **  Created by Gerald Ebert                                             **
 **                                                                      **
@@ -27,21 +27,28 @@
 #include "ps2interface.h"
 
 //========================================================================
-// Hardwiring the ATtiny2313
+// Pin assignment Sipeed M0S Dock (BL616)
 //========================================================================
 /*
-                             ____  ____
-                   (RESET\) -|   \/   |- (Vcc)
-              nc  (RxD/PD0) -|        |- (PB7) nc
-              nc  (TxD/PD1) -|        |- (PB6) KEY4-mouseButton3 (middle)
-              nc      (PA1) -|        |- (PB5) KEY4-mouseButton2 (right)
-        NKC-INT\      (PA0) -|        |- (PB4) KEY4-mouseButton1 (left)
-        PS/2-Clk (INT0/PD2) -|        |- (PB3) KEY4-mouseDown
-   Ext. Activity (INT1/PD3) -|        |- (PB2) KEY4-mouseUp
-       PS/2-Data      (PD4) -|        |- (PB1) KEY4-mouseRight
-              nc      (PD5) -|        |- (PB0) KEY4-mouseLeft
-                      (GND) -|________|- (PD6) Activity LED
+   GPIO        Direction  Function
+   ----------  ---------  -----------------------------------------------
+   GPIO_PIN_10 out        PS/2 keyboard clock  (KBD-Clk)
+   GPIO_PIN_11 out        PS/2 keyboard data   (KBD-Data)
+   GPIO_PIN_12 out        PS/2 mouse clock     (Mouse-Clk)
+   GPIO_PIN_13 out        PS/2 mouse data      (Mouse-Data)
+   GPIO_PIN_14 out        free (initialized as output, high)
+   GPIO_PIN_15 out        free (initialized as output, high)
+   GPIO_PIN_16 out        UART1 TxD -> Ser-Key TxD (ASCII keyboard output)
+   GPIO_PIN_17 in         UART1 RxD
+   GPIO_PIN_27 out        on-board LED 1 (low active): NumLock / USB device
+   GPIO_PIN_28 out        on-board LED 2 (low active)
 
+   USB host:   USB port of the M0S Dock (EHCI host)
+
+   NKC mouse interface (not yet assigned on M0S):
+     KEY4-mouseLeft, KEY4-mouseRight, KEY4-mouseUp, KEY4-mouseDown,
+     KEY4-mouseButton1 (left), KEY4-mouseButton2 (right),
+     KEY4-mouseButton3 (middle), NKC-INT\, Activity LED
 */
 
 //========================================================================
@@ -287,7 +294,7 @@ int main (void)
    DDRB  = 0xFF;    PORTB = 0xFF;
    DDRD  = 0xFF;    PORTD = 0xFF;
 
-   Set_Sleep_Mode(SLEEP_MODE_IDLE);              // Initialize Sleep Mode for AVR
+   Set_Sleep_Mode(SLEEP_MODE_IDLE);              // Initialize Sleep Mode
    WDTI_Enable(WDT_65MS);                        // Enable Watchdog Timer Interrupt
    LEDctrl_INIT;                                 // Initialze TIMER1 for activity led control
 

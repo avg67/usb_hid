@@ -6,7 +6,7 @@
 **  File:      ps2keyboard.c                                            **
 **  Date:      23.02.2007                                               **
 **  Version:   0.96                                                     **
-**  Plattform: WinAVR-20060421 & AVR Studio 4.12.498 & STK500           **
+**  Plattform:                                                          **
 **                                                                      **
 **  Created by Gerald Ebert                                             **
 **                                                                      **
@@ -31,7 +31,6 @@
 **************************************************************************
 *************************************************************************/
 
-//#include "avr_defs.h"
 //#include <FreeRTOS.h>
 //#include <semphr.h>
 #include "types.h"
@@ -42,25 +41,6 @@
 #include "hid_sync_led_control.h"
 //#include "ps2interface.h"
 
-
-//========================================================================
-// Hardwiring the ATtiny2313 (new for KEYr4)
-//========================================================================
-/*
-                             ____  ____
-                   (RESET\) -|   \/   |- (Vcc)
-              NC  (RxD/PD0) -|        |- (PB7) NC
-       PS/2-Data  (TxD/PD1) -|        |- (PB6) KEY4-D6
-              NC      (PA1) -|        |- (PB5) KEY4-D5
-              NC      (PA0) -|        |- (PB4) KEY4-D4
-        PS/2-Clk (INT0/PD2) -|        |- (PB3) KEY4-D3
-     KEY4-Strobe (INT1/PD3) -|        |- (PB2) KEY4-D2
-      KEY4-Ready      (PD4) -|        |- (PB1) KEY4-D1
-              NC      (PD5) -|        |- (PB0) KEY4-D0
-                      (GND) -|________|- (PD6) NKC-RESET\
-
-   * KEY4-Strobe is active high
-*/
 
 //========================================================================
 // Defines
@@ -157,10 +137,10 @@ static BOOL bKeyUpSeen;                          // Key Up (Break) code is previ
 static BOOL bExtenSeen;                          // Extention code is previous data
 static BYTE KeyStates;                           // States of Shift, Ctrl, Alt keys is down
 
-static BYTE KeyboardBuffer [KEYBOARDBUFFER_SIZE]; // Keyboard buffer (32 bytes)
-static tFIFO KeyboardFIFO;                        // Management struct for Keyboard buffer
+//static BYTE KeyboardBuffer [KEYBOARDBUFFER_SIZE]; // Keyboard buffer (32 bytes)
+//static tFIFO KeyboardFIFO;                        // Management struct for Keyboard buffer
 
-static BOOL first;
+//static BOOL first;
 
 //========================================================================
 //========================================================================
@@ -250,7 +230,7 @@ void TransferData2FIFO(const BYTE code)
 // Transfer a byte to NKC
 //========================================================================
 
-void TransferData2NKC(void)
+/*void TransferData2NKC(void)
 {
    BYTE   data;
 
@@ -267,7 +247,7 @@ void TransferData2NKC(void)
 #endif
 	  first = FALSE;
    }
-}
+}*/
 
 extern struct bflb_device_s *gpio;
 
@@ -489,7 +469,7 @@ void DecodeKey2NKC(BYTE ScanCode)
    BYTE      NKCcode = 0;
    BYTE      a, b;
    LPCPBYTE  cp;
-   int		 i;
+   //int		 i;
 
 
    switch ( ScanCode )
@@ -660,7 +640,7 @@ int main (void)
    DDRB  = 0xFF;    PORTB = 0xFF;
    DDRD  = 0xFF;    PORTD = 0xFF;
 
-   Set_Sleep_Mode(SLEEP_MODE_IDLE);              // Initialize Sleep Mode for AVR
+   Set_Sleep_Mode(SLEEP_MODE_IDLE);              // Initialize Sleep Mode
    WDTI_Enable(WDT_32MS);                        // Enable Watchdog Timer Interrupt
 
    NKCSTROBE_PORT &= ~NKCSTROBE_OUT;               // Set strobe to low level so NKC can latch the reset of key data port
