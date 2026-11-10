@@ -157,10 +157,10 @@ static BOOL bKeyUpSeen;                          // Key Up (Break) code is previ
 static BOOL bExtenSeen;                          // Extention code is previous data
 static BYTE KeyStates;                           // States of Shift, Ctrl, Alt keys is down
 
-//static BYTE KeyboardBuffer [KEYBOARDBUFFER_SIZE]; // Keyboard buffer (32 bytes)
-//static tFIFO KeyboardFIFO;                        // Management struct for Keyboard buffer
+static BYTE KeyboardBuffer [KEYBOARDBUFFER_SIZE]; // Keyboard buffer (32 bytes)
+static tFIFO KeyboardFIFO;                        // Management struct for Keyboard buffer
 
-//static BOOL first;
+static BOOL first;
 
 //========================================================================
 //========================================================================
@@ -238,7 +238,7 @@ void TransferData2FIFO(const BYTE code)
 {
     //FIFO_in(&KeyboardFIFO, code);
     if (code>=' ') {
-      printf("Char:'%c' ",code);
+      printf("Char:'%c'",code);
     }else{
       printf("<0x%02X>",code);
     }
@@ -249,7 +249,7 @@ void TransferData2FIFO(const BYTE code)
 //========================================================================
 // Transfer a byte to NKC
 //========================================================================
-/*
+
 void TransferData2NKC(void)
 {
    BYTE   data;
@@ -267,7 +267,7 @@ void TransferData2NKC(void)
 #endif
 	  first = FALSE;
    }
-}*/
+}
 
 extern struct bflb_device_s *gpio;
 
@@ -288,11 +288,16 @@ void SetKeyboardLEDs(void)
    WaitForACKorData();                           // Wait until keyboard acknoledge received
    Send2PS2Device(LEDs);                         // Send led bits
 #endif
-
    set_keyboard_leds_thread_safe(0,LEDs);
-      
-
-}
+   
+   if(LEDs & NUM_LOCK_LED) {
+      bflb_gpio_reset(gpio, GPIO_PIN_27);
+      printf("Enable NUMLOCK Led\r\n");
+   }else {
+      bflb_gpio_set(gpio, GPIO_PIN_27);
+      printf("Disable NUMLOCK Led\r\n");
+   }
+}  
 
 //========================================================================
 //========================================================================
@@ -339,7 +344,7 @@ static const BYTE ScanCodesNormal [] =
 //  -50-, -51-, -52-, -53-, -54-, -55-, -56-, -57-, -58-, -59-, -5A-, -5B-, -5C-, -5D-, -5E-, -5F-
     0x00, 0x00, 0x7B, 0x00, 0x7D, 0x60, 0x00, 0x00, 0x00, 0x00, 0x0D,  '+', 0x00,  '#', 0x00, 0x00,
 //  -60-, -61-, -62-, -63-, -64-, -65-, -66-, -67-,
-    0x00,  '<', 0x00, 0x00, 0x00, 0x00, 0x7F, 0x00,
+    0x00,  '<', 0x00, 0x00, 0x00, 0x00, 0x08, 0x00,
 };
 
 //------------------------------------------------------------------------
@@ -484,7 +489,7 @@ void DecodeKey2NKC(BYTE ScanCode)
    BYTE      NKCcode = 0;
    BYTE      a, b;
    LPCPBYTE  cp;
-   //int		 i;
+   int		 i;
 
 
    switch ( ScanCode )

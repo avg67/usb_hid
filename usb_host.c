@@ -19,21 +19,37 @@
 
 struct hid_info_S {
   int state;
+  int index;
   struct usbh_hid *class;
   struct usbh_urb intin_urb;
+  volatile bool urb_busy;     // true while intin_urb is submitted and not yet completed
   uint8_t *buffer;
   hid_report_t report;
 } hid_info[CONFIG_USBHOST_MAX_HID_CLASS];
 
 USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t hid_buffer[CONFIG_USBHOST_MAX_HID_CLASS][MAX_REPORT_SIZE];
 
+// DMA buffer for SET_REPORT (LEDs). Must be in non-cacheable RAM like all other
+// buffers handed to the EHCI controller, otherwise the controller reads stale data.
+USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX static uint8_t hid_led_buffer[CONFIG_USBHOST_MAX_HID_CLASS][USB_ALIGN_UP(2, CONFIG_USB_ALIGN_SIZE)];
+
+// Reports received in the URB completion callback (interrupt context) are copied
+// into this queue and processed in the usbh_hid thread.
+struct hid_report_msg {
+  uint8_t index;
+  uint8_t len;
+  uint8_t data[MAX_REPORT_SIZE];
+};
+#define HID_REPORT_QUEUE_LEN 32
+static QueueHandle_t hid_report_queue = NULL;
+
 extern struct bflb_device_s *gpio;
-// Global queue for LED requests
+// Global queue for LED requests (length 1, always holds the latest LED state)
 static QueueHandle_t hid_led_request_queue = NULL;
+static uint8_t current_led_state = 0;     // last requested LED state (restored on new keyboards)
 static TaskHandle_t usb_hid_task_handle = NULL;  // Store USB thread handle
 
 int set_keyboard_leds_thread_safe(int hid_index, uint8_t led_state);
-int usbh_hid_set_protocol(struct usbh_hid *hid_class, uint8_t protocol);
 
 #define DEV_KBD   0
 #define DEV_MOUSE 1
@@ -177,37 +193,20 @@ void mouse_parse(signed char *buffer, int nbytes) {
   ps2_tx_byte(DEV_MOUSE, buffer[2]);
   ps2_tx_byte(DEV_MOUSE, buffer[1]);
   ps2_tx_byte(DEV_MOUSE, 0x00);      // z-axis is unused
-  printf("Mouse: buttons=%d x=%d y=%d\r\n", b0&3, buffer[2], buffer[1]);
 }
 
-void usbh_hid_callback(void *arg, int nbytes) {
-  struct hid_info_S *hid_info = (struct hid_info_S *)arg;
-
-  #ifdef USE_USB_LOG_RAW
-  USB_LOG_RAW("CB%d: ", hid_info->class->minor); ddsd
-  #endif
-  
-  // nbytes < 0 means something went wrong. E.g. a devices connected to a hub was
-  // disconnected, but the hub wasn't monitored
-  if(nbytes < 0) {
-#ifdef USE_USB_LOG_RAW
-    USB_LOG_RAW("fail\r\n");
-#endif    
-    hid_info->state = STATE_FAILED;
-    return;
-  }
-  
+// Runs in thread context (usbh_hid thread)
+static void hid_process_report(struct hid_info_S *hid_info, unsigned char *buffer, int nbytes) {
   if (nbytes > 0) {
 #ifdef USE_USB_LOG_RAW
     // just dump the report
     for (size_t i = 0; i < nbytes; i++) 
-      USB_LOG_RAW("0x%02x ", hid_info->buffer[i]);
+      USB_LOG_RAW("0x%02x ", buffer[i]);
     USB_LOG_RAW("\r\n");
 #endif    
     // parse reply
     
     // check and skip report id if present
-    unsigned char *buffer = hid_info->buffer;
     if(hid_info->report.report_id_present) {
       if(!nbytes || (buffer[0] != hid_info->report.report_id))
 	      return;
@@ -228,29 +227,64 @@ void usbh_hid_callback(void *arg, int nbytes) {
   //    USB_LOG_RAW("no data\r\n");
 }  
 
+// URB completion callback. Called from the EHCI interrupt (or from usbh_kill_urb
+// in thread context). Must not block: only copy the report and hand it over to
+// the usbh_hid thread.
+void usbh_hid_callback(void *arg, int nbytes) {
+  struct hid_info_S *hid_info = (struct hid_info_S *)arg;
+
+  hid_info->urb_busy = false;
+
+  // nbytes < 0 means something went wrong. E.g. a devices connected to a hub was
+  // disconnected, but the hub wasn't monitored
+  if(nbytes < 0) {
+    hid_info->state = STATE_FAILED;
+    return;
+  }
+
+  if(nbytes == 0 || !hid_report_queue)
+    return;
+
+  struct hid_report_msg msg;
+  msg.index = (uint8_t)hid_info->index;
+  msg.len = (uint8_t)((nbytes > MAX_REPORT_SIZE) ? MAX_REPORT_SIZE : nbytes);
+  memcpy(msg.data, hid_info->buffer, msg.len);
+
+  if (xPortIsInsideInterrupt()) {
+    BaseType_t woken = pdFALSE;
+    xQueueSendFromISR(hid_report_queue, &msg, &woken);
+    portYIELD_FROM_ISR(woken);
+  } else {
+    xQueueSend(hid_report_queue, &msg, 0);
+  }
+}
+
 static void usbh_hid_update(void) {
   // check for active devices
   for(int i=0;i<CONFIG_USBHOST_MAX_HID_CLASS;i++) {
-    char *dev_str = "/dev/inputX";
+    char dev_str[] = "/dev/inputX";
     dev_str[10] = '0' + i;
     hid_info[i].class = (struct usbh_hid *)usbh_find_class_instance(dev_str);
     
     if(hid_info[i].class && hid_info[i].state == STATE_NONE) {
       printf("NEW %d\r\n", i);
 
-      printf("Interval: %d\r\n", hid_info[i].class->hport->config.intf[i].altsetting[0].ep[0].ep_desc.bInterval);
-	 
-      printf("Interface %d\r\n", hid_info[i].class->intf);
-      printf("  class %d\r\n", hid_info[i].class->hport->config.intf[i].altsetting[0].intf_desc.bInterfaceClass);
-      printf("  subclass %d\r\n", hid_info[i].class->hport->config.intf[i].altsetting[0].intf_desc.bInterfaceSubClass);
-      printf("  protocol %d\r\n", hid_info[i].class->hport->config.intf[i].altsetting[0].intf_desc.bInterfaceProtocol);
+      const uint8_t intf = hid_info[i].class->intf;
+      printf("Interface %d\r\n", intf);
+      if (intf < CONFIG_USBHOST_MAX_INTERFACES) {
+        struct usbh_interface *itf = &hid_info[i].class->hport->config.intf[intf];
+        printf("Interval: %d\r\n", itf->altsetting[0].ep[0].ep_desc.bInterval);
+        printf("  class %d\r\n", itf->altsetting[0].intf_desc.bInterfaceClass);
+        printf("  subclass %d\r\n", itf->altsetting[0].intf_desc.bInterfaceSubClass);
+        printf("  protocol %d\r\n", itf->altsetting[0].intf_desc.bInterfaceProtocol);
+      }
 	
       // parse report descriptor ...
       printf("report descriptor: %p\r\n", hid_info[i].class->report_desc);
       
       if(!parse_report_descriptor(hid_info[i].class->report_desc, 128, &hid_info[i].report)) {
 	      hid_info[i].state = STATE_FAILED;   // parsing failed, don't use
-	      return;
+	      continue;
       }
       
       hid_info[i].state = STATE_DETECTED;
@@ -259,6 +293,7 @@ static void usbh_hid_update(void) {
     else if(!hid_info[i].class && hid_info[i].state != STATE_NONE) {
       printf("LOST %d\r\n", i);
       hid_info[i].state = STATE_NONE;
+      hid_info[i].urb_busy = false;
     }
   }
 }
@@ -281,30 +316,44 @@ int usbh_hid_set_report_patched(struct usbh_hid *hid_class, uint8_t report_type,
     return usbh_control_transfer(hid_class->hport, setup, buffer); 
 } 
 
-void usb_set_all_keyboard_leds(uint8_t leds_mask) 
+// Send the LED output report to keyboard i via SET_REPORT on EP0.
+// The data stage is read by the EHCI controller via DMA -> non-cacheable buffer.
+// In report protocol (boot protocol not set) keyboards with report IDs expect the
+// report ID as first byte; the keyboard input report ID is used for this.
+static int hid_send_led_report(int i, uint8_t leds_mask)
+{
+    uint8_t report_id = 0;
+    uint32_t len = 0;
+
+    if (hid_info[i].report.report_id_present) {
+        report_id = hid_info[i].report.report_id;
+        hid_led_buffer[i][len++] = report_id;
+    }
+    hid_led_buffer[i][len++] = leds_mask & 0x1f;  // Only bits 0-4 are valid LED bits
+
+    return usbh_hid_set_report_patched(hid_info[i].class, HID_REPORT_OUTPUT, report_id,
+                                       hid_led_buffer[i], len);
+}
+
+int usb_set_all_keyboard_leds(uint8_t leds_mask) 
 { 
-    uint8_t g_kbd_leds = leds_mask & 0x1f;  // Only bits 0-4 are valid LED bits
+    int result = 0;
 
     for (int i = 0; i < CONFIG_USBHOST_MAX_HID_CLASS; i++) { 
-        if (hid_info[i].state != STATE_RUNNING) { 
-            printf("HID device %d not ready (state=%d)\r\n", i, hid_info[i].state);
+        if (hid_info[i].state != STATE_RUNNING || !hid_info[i].class) { 
             continue; 
         } 
         if (hid_info[i].report.type != REPORT_TYPE_KEYBOARD) { 
-            printf("HID device %d is not a keyboard (type=%d)\r\n", 
-                   i, hid_info[i].report.type);  
             continue; 
         } 
-        printf("Setting LEDs for keyboard %d: mask=0x%02x\r\n", i, g_kbd_leds);
-        // Typical boot keyboards: report_id = 0 (no report ID for output report) 
-        // report_type=2 means OUTPUT report in HID 
-        int ret = usbh_hid_set_report_patched(hid_info[i].class, 2 /*OUTPUT*/, 0 /*report_id*/, 
-                                      &g_kbd_leds, 1); 
- 
-        // optional debug 
-        // printf("kbd%d led set ret=%d mask=%02x\n", i, ret, g_kbd_leds); 
-        (void)ret; 
+        printf("Setting LEDs for keyboard %d: mask=0x%02x\r\n", i, leds_mask & 0x1f);
+        int ret = hid_send_led_report(i, leds_mask); 
+        if (ret < 0) {
+            printf("kbd%d SET_REPORT(LED) failed: %d\r\n", i, ret);
+            result = ret;
+        }
     } 
+    return result;
 } 
 
 static int set_keyboard_leds_internal(struct hid_led_request *led_req)
@@ -318,7 +367,7 @@ static int set_keyboard_leds_internal(struct hid_led_request *led_req)
         return -1;
     }
     
-#if 0
+    #if 0
     struct hid_info_S *hid = &hid_info[led_req->hid_index];
 
     if (!hid->class || hid->state != STATE_RUNNING) {
@@ -378,25 +427,12 @@ static int set_keyboard_leds_internal(struct hid_led_request *led_req)
         return ret;
     }
     #endif
+    current_led_state = led_req->led_state;
+    const int ret = usb_set_all_keyboard_leds(led_req->led_state);
 
-    if(led_req->led_state & 1) {
-      //printf("Enable NUMLOCK Led\r\n");
-      bflb_gpio_reset(gpio, GPIO_PIN_27);
-    }else {
-      //printf("Disable NUMLOCK Led\r\n");  
-      bflb_gpio_set(gpio, GPIO_PIN_27);  
-    }
-    if(led_req->led_state & 2) {
-        bflb_gpio_reset(gpio, GPIO_PIN_28);
-        //printf("Enable CAPSLOCK Led\r\n");
-    }else {
-        bflb_gpio_set(gpio, GPIO_PIN_28);
-        //printf("Disable CAPSLOCK Led\r\n");
-    }
-    usb_set_all_keyboard_leds(led_req->led_state);
-
-    printf("LED request completed successfully\r\n");
-    return 0;
+    if (ret == 0)
+        printf("LED request completed successfully\r\n");
+    return ret;
 }
 
 
@@ -460,28 +496,32 @@ static int set_keyboard_leds_internal(struct hid_led_request *led_req)
     return 0;
 }*/
 
+static void hid_submit_intin(int i) {
+  hid_info[i].urb_busy = true;
+  int ret = usbh_submit_urb(&hid_info[i].intin_urb);
+  if (ret < 0 && ret != -USB_ERR_BUSY) {   // BUSY: previous URB still in flight
+    hid_info[i].urb_busy = false;
+    // submit failed
+    printf("%d: submit failed: %d\r\n", i, ret);
+    hid_info[i].state = STATE_FAILED;
+  }
+}
+
 static void usbh_hid_thread(void *argument)
 {
   int ret;
   //usbh_hid_keyboard_init(hid->class);
-  usb_hid_task_handle = xTaskGetCurrentTaskHandle();  
-  
+
   while (1) {
 
     usbh_hid_update();
     
-    usb_osal_msleep(10);
     for(int i=0;i<CONFIG_USBHOST_MAX_HID_CLASS;i++) {
       if(hid_info[i].state == STATE_DETECTED) {
 	      printf("NEW device %d\r\n", i);
 	      hid_info[i].state = STATE_RUNNING; 
 
-
-
-
-
-//#if 0
-
+#if 0
     	// set report protocol 1 if subclass != BOOT_INTF
     	// CherryUSB doesn't report the InterfaceSubClass (HID_BOOT_INTF_SUBCLASS)
     	// we thus set boot protocol on keyboards
@@ -495,10 +535,14 @@ static void usbh_hid_thread(void *argument)
     	    continue;
     	  }
     	}
-//#endif
+#endif
 
- 
-
+    	if( hid_info[i].report.type == REPORT_TYPE_KEYBOARD ) {
+    	  // restore current LED state on the newly connected keyboard
+    	  ret = hid_send_led_report(i, current_led_state);
+    	  if (ret < 0)
+    	    printf("%d: initial SET_REPORT(LED) failed: %d\r\n", i, ret);
+    	}
 	
     	// request first urb
     	printf("%d: Submit urb size %d\r\n", i, hid_info[i].report.report_size + (hid_info[i].report.report_id_present ? 1:0));
@@ -510,31 +554,36 @@ static void usbh_hid_thread(void *argument)
                 hid_info[i].class->intin, hid_info[i].buffer,
                 hid_info[i].report.report_size + (hid_info[i].report.report_id_present ? 1:0),
                 0, usbh_hid_callback, &hid_info[i]);
-    	ret = usbh_submit_urb(&hid_info[i].intin_urb);
-    	if (ret < 0) {
-    	  // submit failed
-    	  printf("initial submit failed\r\n");
-    	  hid_info[i].state = STATE_FAILED;
-    	  continue;
-    	}
-          } else if(hid_info[i].state == STATE_RUNNING) {
-      	    // todo: honour binterval which is in milliseconds for low speed
-        	// todo: wait for callback
-        	ret = usbh_submit_urb(&hid_info[i].intin_urb);
-        	// if (ret < 0) printf("submit failed\r\n");
-          }
+    	hid_submit_intin(i);
+      } else if(hid_info[i].state == STATE_RUNNING && !hid_info[i].urb_busy) {
+        // resubmit only after the previous URB has completed (callback was called)
+        hid_submit_intin(i);
       }
+    }
+
+    // Process received reports in thread context (wait max. 10ms for the first one)
+    {
+      struct hid_report_msg msg;
+      TickType_t wait = pdMS_TO_TICKS(10);
+      while (xQueueReceive(hid_report_queue, &msg, wait) == pdTRUE) {
+        wait = 0;
+        if (msg.index < CONFIG_USBHOST_MAX_HID_CLASS && hid_info[msg.index].state == STATE_RUNNING)
+          hid_process_report(&hid_info[msg.index], msg.data, msg.len);
+      }
+    }
+
     {
       struct hid_led_request led_req={0};
-      // Process pending LED requests (non-blocking check, 10ms timeout)
-      if (xQueueReceive(hid_led_request_queue, &led_req, pdMS_TO_TICKS(10)) == pdTRUE) {
+      // Process pending LED request (non-blocking)
+      if (xQueueReceive(hid_led_request_queue, &led_req, 0) == pdTRUE) {
           printf("Processing queued LED request\r\n");
           
           // Process LED request in USB thread context
           led_req.result = set_keyboard_leds_internal(&led_req);
           
-          // Signal completion back to requesting thread
-          xSemaphoreGive(led_req.completion_sem);
+          // Signal completion back to requesting thread (if it waits)
+          if (led_req.completion_sem)
+            xSemaphoreGive(led_req.completion_sem);
       }
     }
   }
@@ -545,18 +594,18 @@ void usbh_hid_run(struct usbh_hid *hid_class) {
   printf("HID run\r\n");
   //usbh_hid_update();
   // LED 1 on
-// #ifdef M0S_DOCK
-//   bflb_gpio_reset(gpio, GPIO_PIN_27);
-// #endif
+#ifdef M0S_DOCK
+  bflb_gpio_reset(gpio, GPIO_PIN_27);
+#endif
 }
 
 void usbh_hid_stop(struct usbh_hid *hid_class) {
   printf("HID stop\r\n");
   //usbh_hid_update();
   // LED 1 off
-// #ifdef M0S_DOCK
-//   bflb_gpio_set(gpio, GPIO_PIN_27);
-// #endif
+#ifdef M0S_DOCK
+  bflb_gpio_set(gpio, GPIO_PIN_27);
+#endif
 }
 
 
@@ -582,6 +631,12 @@ static void ps2_kbd_thread(void *argument)
 
     uart1 = bflb_device_get_by_name("uart1");   // AV added
     bflb_uart_init(uart1, &cfg);
+
+  /* bflb_uart_putchar(uart1,' ');
+   bflb_uart_putchar(uart1,'A');
+   bflb_uart_putchar(uart1,'n');
+   bflb_uart_putchar(uart1,'d');
+   bflb_uart_putchar(uart1,'i');*/
 
 /*   vTaskDelay(pdMS_TO_TICKS(5000));
    // From your menu or any thread
@@ -610,9 +665,7 @@ printf("LED tests complete\r\n");*/
     const int ret = usb_osal_mq_recv(my_queue, &received_val, USB_OSAL_WAITING_FOREVER);
     if (ret == 0) {
         // Data successfully received
-#ifdef DEBUG_KEYBOARD        
         printf("Received value: %d\r\n", (BYTE)received_val);
-#endif        
         DecodeKey2NKC((BYTE)received_val);
     }
   }
@@ -622,22 +675,29 @@ printf("LED tests complete\r\n");*/
 void usbh_class_test(void) {
   printf("init usbh class\r\n");
 
-  // Create queue for LED requests (10 requests max)
-  hid_led_request_queue = xQueueCreate(10, sizeof(struct hid_led_request));
+  // Create queue for LED requests (length 1, used with xQueueOverwrite)
+  hid_led_request_queue = xQueueCreate(1, sizeof(struct hid_led_request));
   if (!hid_led_request_queue) {
       printf("Failed to create LED request queue\r\n");
+  }
+
+  hid_report_queue = xQueueCreate(HID_REPORT_QUEUE_LEN, sizeof(struct hid_report_msg));
+  if (!hid_report_queue) {
+      printf("Failed to create HID report queue\r\n");
   }
 
 
   // mark all HID info entries as unused
   for(int i=0;i<CONFIG_USBHOST_MAX_HID_CLASS;i++) {
     hid_info[i].state = 0;
+    hid_info[i].index = i;
+    hid_info[i].urb_busy = false;
     hid_info[i].buffer = hid_buffer[i];      
   }
-  my_queue = usb_osal_mq_create(10);
+  my_queue = usb_osal_mq_create(64);
 
-  usb_osal_thread_create("usbh_hid", 2048, CONFIG_USBHOST_PSC_PRIO - 1, usbh_hid_thread, NULL);
-  usb_osal_thread_create("ps2_kbd", 2048, CONFIG_USBHOST_PSC_PRIO - 2 , ps2_kbd_thread, NULL);
+  usb_osal_thread_create("usbh_hid", 2048, CONFIG_USBHOST_PSC_PRIO + 1, usbh_hid_thread, NULL);
+  usb_osal_thread_create("ps2_kbd", 2048, CONFIG_USBHOST_PSC_PRIO + 1, ps2_kbd_thread, NULL);
 }
 #if 0
 /**
@@ -698,36 +758,18 @@ int set_keyboard_leds_thread_safe(int hid_index, uint8_t led_state)
         return set_keyboard_leds_internal(&led_req);
     }
 
-    // From different thread: queue the request
-    printf("Setting LED from different thread (queued)\r\n");
-    
+    // From different thread: hand the request over to the USB thread without
+    // waiting. The queue has length 1, so only the latest LED state is kept and
+    // the caller (ps2_kbd thread) never blocks -> no deadlock with the USB thread,
+    // which may itself block while feeding the ps2_kbd queue.
     led_req.hid_index = hid_index;
     led_req.led_state = led_state;
-    led_req.completion_sem = xSemaphoreCreateBinary();
+    led_req.completion_sem = NULL;
     led_req.result = -1;
 
-    if (!led_req.completion_sem) {
-        printf("Failed to create semaphore\r\n");
+    if (!hid_led_request_queue)
         return -1;
-    }
 
-    // Send request to USB thread queue
-    BaseType_t queue_result = xQueueSend(hid_led_request_queue, &led_req, pdMS_TO_TICKS(100));
-    if (queue_result != pdTRUE) {
-        printf("Failed to queue LED request (queue full?)\r\n");
-        vSemaphoreDelete(led_req.completion_sem);
-        return -1;
-    }
-
-    // Wait for completion with timeout
-    BaseType_t sem_result = xSemaphoreTake(led_req.completion_sem, pdMS_TO_TICKS(1000));
-    if (sem_result != pdTRUE) {
-        printf("LED request timeout\r\n");
-        vSemaphoreDelete(led_req.completion_sem);
-        return -255;
-    }
-
-    int result = led_req.result;
-    vSemaphoreDelete(led_req.completion_sem);
-    return result;
+    xQueueOverwrite(hid_led_request_queue, &led_req);
+    return 0;
 }
