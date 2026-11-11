@@ -128,10 +128,60 @@ void ps2_kbd_tx_ps2(char make, unsigned short ps2) {
 }
 
 void ps2_kbd_tx(char make, unsigned char code) {
-  // ignore everything outside table
-  if(code >= 0x70) return;
+  // ignore everything outside table and keys without PS/2 mapping
+  if(code > KEYCODE_MAX || usb2ps2[code] == MISS) return;
 
   ps2_kbd_tx_ps2(make, usb2ps2[code]);
+}
+
+// ---------------------------------------------------------------------------
+// Typematic (key repeat). USB keyboards do not repeat keys themselves, the
+// host has to do it. Same timing as the former PS/2 setup: 500ms / 16 cps.
+// All functions run in the usbh_hid thread.
+// ---------------------------------------------------------------------------
+#define KBD_REPEAT_DELAY_MS   500
+#define KBD_REPEAT_RATE_MS    62      // ~16 characters per second
+
+static unsigned char kbd_last_report[8] = { 0,0,0,0,0,0,0,0 };
+static unsigned char kbd_repeat_key = 0;  // USB usage code of the repeating key, 0 = none
+static TickType_t    kbd_repeat_next;     // tick of the next repeat
+
+static bool kbd_key_repeatable(unsigned char code) {
+  switch(code) {
+    case 0x39:  // Caps Lock
+    case 0x47:  // Scroll Lock
+    case 0x48:  // Pause
+    case 0x53:  // Num Lock
+      return false;
+    default:
+      return (code <= KEYCODE_MAX) && (usb2ps2[code] != MISS);
+  }
+}
+
+static bool kbd_key_in_report(const unsigned char *report, unsigned char code) {
+  for(int i=0;i<6;i++)
+    if(report[2+i] == code) return true;
+  return false;
+}
+
+// forget all pressed keys (keyboard lost/failed)
+static void kbd_reset_state(void) {
+  memset(kbd_last_report, 0, sizeof(kbd_last_report));
+  kbd_repeat_key = 0;
+}
+
+// called periodically from the usbh_hid thread
+static void kbd_repeat_poll(void) {
+  if(!kbd_repeat_key) return;
+
+  const TickType_t now = xTaskGetTickCount();
+  if((int32_t)(now - kbd_repeat_next) >= 0) {
+    ps2_kbd_tx(1, kbd_repeat_key);         // PS/2 typematic: repeated make code only
+    // schedule relative to the planned time to keep the average rate exact
+    kbd_repeat_next += pdMS_TO_TICKS(KBD_REPEAT_RATE_MS);
+    if((int32_t)(now - kbd_repeat_next) >= 0)   // far behind: don't send bursts
+      kbd_repeat_next = now + pdMS_TO_TICKS(KBD_REPEAT_RATE_MS);
+  }
 }
 
 void kbd_parse(unsigned char *buffer, int nbytes) {
@@ -145,9 +195,12 @@ void kbd_parse(unsigned char *buffer, int nbytes) {
 
   // we expect boot mode packets which are exactly 8 bytes long
   if(nbytes != 8) return;
-  
-  // store local list of pressed keys to detect key release
-  static unsigned char last_report[8] = { 0,0,0,0,0,0,0,0 };
+
+  // phantom state (too many keys pressed, all slots 0x01): ignore report,
+  // keep the last valid state
+  if(buffer[2] == 0x01) return;
+
+  unsigned char *last_report = kbd_last_report;
 
   // check if modifier have changed
   if(buffer[0] != last_report[0]) {
@@ -161,14 +214,29 @@ void kbd_parse(unsigned char *buffer, int nbytes) {
     }
   }
 
-  // check if regular keys have changed
+  // Released keys: compare by key code, not by slot position. Keyboards may
+  // shift the remaining keys to other slots when a key is released.
   for(int i=0;i<6;i++) {
-    if(buffer[2+i] != last_report[2+i]) {
-      // key released?
-      if(last_report[2+i]) ps2_kbd_tx(0, last_report[2+i]);      
-      // key pressed?
-      if(buffer[2+i])      ps2_kbd_tx(1, buffer[2+i]);
-    }    
+    const unsigned char code = last_report[2+i];
+    if(code && !kbd_key_in_report(buffer, code)) {
+      ps2_kbd_tx(0, code);
+      if(code == kbd_repeat_key) kbd_repeat_key = 0;
+    }
+  }
+
+  // newly pressed keys
+  for(int i=0;i<6;i++) {
+    const unsigned char code = buffer[2+i];
+    if(code && !kbd_key_in_report(last_report, code)) {
+      ps2_kbd_tx(1, code);
+      // the most recently pressed key repeats (like a PS/2 keyboard)
+      if(kbd_key_repeatable(code)) {
+        kbd_repeat_key = code;
+        kbd_repeat_next = xTaskGetTickCount() + pdMS_TO_TICKS(KBD_REPEAT_DELAY_MS);
+      } else {
+        kbd_repeat_key = 0;
+      }
+    }
   }
   
   memcpy(last_report, buffer, 8);
@@ -570,6 +638,20 @@ static void usbh_hid_thread(void *argument)
         if (msg.index < CONFIG_USBHOST_MAX_HID_CLASS && hid_info[msg.index].state == STATE_RUNNING)
           hid_process_report(&hid_info[msg.index], msg.data, msg.len);
       }
+    }
+
+    // Key repeat. Stop it (and forget pressed keys) if no keyboard is running
+    // anymore, e.g. keyboard unplugged while a key was held down.
+    {
+      bool kbd_running = false;
+      for(int i=0;i<CONFIG_USBHOST_MAX_HID_CLASS;i++)
+        if(hid_info[i].state == STATE_RUNNING && hid_info[i].report.type == REPORT_TYPE_KEYBOARD)
+          kbd_running = true;
+
+      if(kbd_running)
+        kbd_repeat_poll();
+      else
+        kbd_reset_state();
     }
 
     {
